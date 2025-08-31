@@ -8,6 +8,9 @@ import { EventHandlers } from "./events/event-handlers";
 import { ImportService } from "./services/import-service";
 import { StorageService } from "./services/storage-service";
 import { FileService } from "./services/file-service";
+import { ProfileStore } from "./services/profile-store";
+import { MaterialisedStore } from "./services/materialised-store";
+import { ChatManagementModal } from "./ui/chat-management-modal";
 import { IncrementalUpgradeManager } from "./upgrade/incremental-upgrade-manager";
 import { Logger } from "./logger";
 import { ProviderSelectionDialog } from "./dialogs/provider-selection-dialog";
@@ -20,6 +23,8 @@ export default class NexusAiChatImporterPlugin extends Plugin {
     private storageService: StorageService;
     private importService: ImportService;
     private fileService: FileService;
+    private profileStore: ProfileStore;
+    private materialisedStore: MaterialisedStore;
     private commandRegistry: CommandRegistry;
     private eventHandlers: EventHandlers;
     private upgradeManager: IncrementalUpgradeManager;
@@ -33,6 +38,8 @@ export default class NexusAiChatImporterPlugin extends Plugin {
         this.commandRegistry = new CommandRegistry(this);
         this.eventHandlers = new EventHandlers(this);
         this.upgradeManager = new IncrementalUpgradeManager(this);
+        this.profileStore = new ProfileStore(this);
+        this.materialisedStore = new MaterialisedStore(this);
     }
 
     async onload() {
@@ -105,7 +112,9 @@ export default class NexusAiChatImporterPlugin extends Plugin {
 
             // Load storage data
             await this.storageService.loadData();
-            
+            // Initialize profile and materialised stores
+            await this.profileStore.getActive();
+
         } catch (error) {
             this.logger.error("loadSettings failed:", error);
             throw error;
@@ -186,6 +195,14 @@ export default class NexusAiChatImporterPlugin extends Plugin {
         return this.fileService;
     }
 
+    getProfileStore(): ProfileStore {
+        return this.profileStore;
+    }
+
+    getMaterialisedStore(): MaterialisedStore {
+        return this.materialisedStore;
+    }
+
     getUpgradeManager(): IncrementalUpgradeManager {
         return this.upgradeManager;
     }
@@ -224,6 +241,10 @@ export default class NexusAiChatImporterPlugin extends Plugin {
             }
         };
         input.click();
+    }
+
+    openChatManagementModal(): void {
+        new ChatManagementModal(this).open();
     }
 
     /**
