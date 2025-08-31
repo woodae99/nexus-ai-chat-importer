@@ -30,6 +30,15 @@ yarn-error.log*
 venv/
 .venv/
 __pycache__/
+tmp-*.js
+
+# Sample data in docs (keep only markdown specs)
+docs/*
+!docs/*.md
+
+# Build outputs
+dist/
+main.js.map
 
 # Removing build from sync
 *.js.map
