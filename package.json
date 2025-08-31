@@ -7,8 +7,8 @@
         "dev": "node esbuild.config.mjs && cp styles.css build/styles.css && chokidar \"styles.css\" -c \"cp styles.css build/styles.css\"",
         "type-check": "tsc --noEmit --skipLibCheck",
         "build-only": "node esbuild.config.mjs production",
-        "build": "npm run build-only",
-        "build-with-check": "npm run type-check && npm run build-only",
+        "build": "npm run build-only && cp dist/main.js main.js && (cp dist/main.js.map main.js.map 2>/dev/null || true)",
+        "build-with-check": "npm run type-check && npm run build",
         "ios-build": "node esbuild.config.mjs ios"
     },
     "keywords": [],

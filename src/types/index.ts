@@ -6,5 +6,8 @@ export * from './plugin';
 // Export standard conversation types (provider-agnostic)
 export * from './standard';
 
+// Export chat management types
+export * from './chat-management';
+
 // Note: Provider-specific types (like ChatGPT) should be imported directly
 // from their respective providers to maintain clean architecture separation
