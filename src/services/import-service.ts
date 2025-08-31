@@ -1,4 +1,4 @@
-// src/services/import-service.ts
+﻿// src/services/import-service.ts
 import { Notice } from "obsidian";
 import JSZip from "jszip";
 import { CustomError } from "../types/plugin";
@@ -65,7 +65,7 @@ export class ImportService {
         try {
             const fileHash = await getFileHash(file);
 
-            // Check if already imported (hybrid detection for 1.0.x → 1.1.0 compatibility)
+            // Check if already imported (hybrid detection for 1.0.x â†’ 1.1.0 compatibility)
             const foundByHash = storage.isArchiveImported(fileHash);
             const foundByName = storage.isArchiveImported(file.name);
             const isReprocess = foundByHash || foundByName;
@@ -134,7 +134,7 @@ export class ImportService {
             progressModal.open();
 
             // Provide initial validation UI feedback
-            progressCallback({ phase: 'validation', title: 'Preparing import…', detail: `Importing ${filteredRaw.length} selected chats` });
+            progressCallback({ phase: 'validation', title: 'Preparing importâ€¦', detail: `Importing ${filteredRaw.length} selected chats` });
 
             await this.processConversationsFromRaw(zip, file, filteredRaw, isReprocess, provider, progressCallback);
 
@@ -323,8 +323,9 @@ export class ImportService {
         const adapter = this.providerRegistry.getAdapter(provider)!;
         const summaries: ChatSummary[] = [];
         const storage = this.plugin.getStorageService();
-        const profile = await this.plugin.getProfileStore().getActive();
         const globalIgnores = await this.plugin.getProfileStore().listGlobalIgnores();
+        // Scan existing conversations once
+        const existingMap = await storage.scanExistingConversations();
 
         for (const chat of raw) {
             try {
@@ -333,12 +334,11 @@ export class ImportService {
                 const createdAtSec = adapter.getCreateTime(chat) || 0; // seconds
                 const updatedAtSec = adapter.getUpdateTime(chat) || 0; // seconds
 
-                // Determine status against vault and profile
                 let status: 'new' | 'updated' | 'imported' | 'ignored' = 'new';
-                if ((profile.ignore && profile.ignore[uid]) || (globalIgnores && (globalIgnores as any)[uid])) {
+                if (globalIgnores && (globalIgnores as any)[uid]) {
                     status = 'ignored';
                 } else {
-                    const existing = await storage.getConversationById(uid);
+                    const existing = existingMap.get(uid) || null;
                     if (existing) {
                         status = (existing.updateTime < updatedAtSec) ? 'updated' : 'imported';
                     }
@@ -495,3 +495,4 @@ ${report.generateReportContent()}
         return `${now.getFullYear()}.${String(now.getMonth() + 1).padStart(2, '0')}.${String(now.getDate()).padStart(2, '0')}`;
     }
 }
+
