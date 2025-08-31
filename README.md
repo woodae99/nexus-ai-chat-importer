@@ -6,6 +6,16 @@
 
 Import your AI chat conversations from **ChatGPT** and **Claude** exports into Obsidian as beautifully formatted Markdown files with colored message boxes, attachment support, and Claude artifact versioning.
 
+## Branch Update: filter_and_select
+
+We’ve temporarily pivoted feature work to a simpler branch focused on pre‑import filtering and selection:
+
+- Keep: Provider selection → pre‑import modal with filtering, sorting, and “Import selected”.
+- Add: Global Exclude list with actions (Add selected, Clear, Manage) to keep noisy topics out across imports.
+- Defer: Full profile management (saved include/ignore sets, apply/merge, relocation tools) — retained in the earlier profile beta work for later revisit.
+
+Rationale: profiles need a clearer strategy and UX. To keep momentum on core importing, we’re shipping filter + select with a single global exclude concept. See `docs/branch-notes.md` for details and next steps.
+
 ## ☕ Support My Work
 
 If this plugin makes your life easier, consider supporting its development:
