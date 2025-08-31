@@ -14,23 +14,6 @@ export class CommandRegistry {
                 this.plugin.showProviderSelectionDialog();
             },
         });
-
-        this.plugin.addCommand({
-            id: "nexus-ai-chat-importer-open-management",
-            name: "Open Chat Management",
-            callback: () => {
-                this.plugin.openChatManagementModal();
-            },
-        });
-
-        this.plugin.addCommand({
-            id: "nexus-ai-chat-importer-switch-profile",
-            name: "Switch Import Profile",
-            callback: () => {
-                this.plugin.openProfileSwitchModal();
-            },
-        });
-
     }
 
     private showResetConfirmation() {

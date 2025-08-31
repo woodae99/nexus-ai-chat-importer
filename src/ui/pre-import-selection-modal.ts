@@ -1,5 +1,5 @@
-import { App, Modal, Setting, TextComponent, SuggestModal, Notice } from 'obsidian';
-import type { ChatSummary, ChatUID, ImportProfile } from '../types';
+import { App, Modal, Setting, TextComponent, Notice } from 'obsidian';
+import type { ChatSummary, ChatUID } from '../types';
 import type NexusAiChatImporterPlugin from '../main';
 
 type SortKey = 'updatedAt' | 'createdAt' | 'title';
@@ -8,7 +8,6 @@ type SortDir = 'asc' | 'desc';
 export class PreImportSelectionModal extends Modal {
   private plugin: NexusAiChatImporterPlugin;
   private provider: string;
-  private profile: ImportProfile;
   private allSummaries: ChatSummary[];
   private filtered: ChatSummary[] = [];
   private selection: Set<ChatUID> | any = new Set<ChatUID>();
@@ -19,26 +18,17 @@ export class PreImportSelectionModal extends Modal {
   private listEl!: HTMLElement;
   private countEl!: HTMLElement;
   private importBtn!: HTMLButtonElement;
-  private persistUnselected = false;
-  private useGlobalIgnore = false;
   private globalIgnores: Record<string, true> = {} as any;
 
-  constructor(plugin: NexusAiChatImporterPlugin, provider: string, summaries: ChatSummary[], profile: ImportProfile, private onConfirm: (result: { selected: Set<ChatUID>, persistUnselected: boolean, ignoreScope: 'profile'|'global' }) => void) {
+  constructor(plugin: NexusAiChatImporterPlugin, provider: string, summaries: ChatSummary[], private onConfirm: (selected: Set<ChatUID>) => void) {
     super(plugin.app);
     this.plugin = plugin;
     this.provider = provider;
-    this.profile = profile;
     this.allSummaries = summaries;
 
-    // Initial selection: include all not explicitly ignored by profile
+    // Initial selection: select all (we will drop globally excluded later)
     this.ensureSelectionSet();
-    for (const s of this.allSummaries) {
-      if (profile.ignore?.[s.uid]) continue;
-      // If include set exists, prioritize it; otherwise default include
-      if (!profile.include || profile.include[s.uid] || Object.keys(profile.include).length === 0) {
-        (this.selection as Set<ChatUID>).add(s.uid);
-      }
-    }
+    for (const s of this.allSummaries) (this.selection as Set<ChatUID>).add(s.uid);
   }
 
   onOpen(): void {
@@ -46,23 +36,7 @@ export class PreImportSelectionModal extends Modal {
     contentEl.empty();
     contentEl.addClass('nexus-preimport-modal');
 
-    // Load global ignores and adjust selection before rendering
-    this.plugin.getProfileStore().listGlobalIgnores().then((gi) => {
-      this.globalIgnores = gi || {} as any;
-      // If profile has explicit includes, prefer them; else drop any globally ignored from selection
-      const includeKeys = Object.keys(this.profile.include || {});
-      if (includeKeys.length > 0) {
-        this.selection = new Set<ChatUID>(includeKeys as ChatUID[]);
-      } else {
-        for (const s of this.allSummaries) {
-          if ((this.globalIgnores as any)[s.uid]) {
-            (this.selection as Set<ChatUID>).delete(s.uid);
-          }
-        }
-      }
-      this.renderList();
-      this.updateCounts();
-    }).catch(() => {});
+    this.refreshGlobalIgnores();
 
     // Make modal spacious
     const modalEl = (this as any).modalEl as HTMLElement | undefined;
@@ -75,8 +49,6 @@ export class PreImportSelectionModal extends Modal {
     // Header
     const header = contentEl.createEl('div');
     header.createEl('h2', { text: `Select Chats to Import (${this.provider})` });
-    const sub = header.createEl('div', { text: `Active profile: ${this.profile.name}` });
-    sub.style.color = 'var(--text-muted)';
     const loaded = header.createEl('div', { text: `Loaded ${this.allSummaries.length} chats from archive` });
     loaded.style.color = 'var(--text-accent)';
     loaded.style.fontWeight = '600';
@@ -148,16 +120,28 @@ export class PreImportSelectionModal extends Modal {
       this.updateCounts();
     }));
 
-    // Persistence options
-    const persist = new Setting(controls).setName('Persist unselected as ignore');
-    persist.addToggle(t => t.setValue(this.persistUnselected).onChange(v => { this.persistUnselected = v; }));
-    const scope = new Setting(controls).setName('Ignore scope');
-    scope.addDropdown(d => {
-      d.addOption('profile', 'Profile');
-      d.addOption('global', 'Global');
-      d.setValue('profile');
-      d.onChange(v => { this.useGlobalIgnore = (v === 'global'); });
-    });
+    // Global Exclude controls
+    const exclude = new Setting(controls).setName('Global Exclude');
+    exclude.addButton(b => b.setButtonText('Add selected to exclude').onClick(async () => {
+      const uids = this.getSelectedUids();
+      await this.plugin.getProfileStore().addGlobalIgnores(uids);
+      new Notice(`Added ${uids.length} chats to global exclude`);
+      await this.refreshGlobalIgnores();
+    }));
+    exclude.addButton(b => b.setButtonText('Clear exclude').onClick(async () => {
+      await this.plugin.getProfileStore().setGlobalIgnores({});
+      new Notice('Cleared global exclude list');
+      await this.refreshGlobalIgnores();
+    }));
+    exclude.addButton(b => b.setButtonText('Manage excluded…').onClick(async () => {
+      const current = await this.plugin.getProfileStore().listGlobalIgnores();
+      const modal = new ManageGlobalExcludeModal(this.app, current, this.allSummaries, async (newSet) => {
+        await this.plugin.getProfileStore().setGlobalIgnores(newSet);
+        new Notice('Updated global exclude list');
+        await this.refreshGlobalIgnores();
+      });
+      modal.open();
+    }));
 
     // Counts
     this.countEl = contentEl.createDiv();
@@ -191,7 +175,7 @@ export class PreImportSelectionModal extends Modal {
 
     this.importBtn = right.createEl('button', { text: 'Import selected', cls: 'mod-cta' });
     this.importBtn.onclick = () => {
-      this.onConfirm({ selected: new Set(this.selection as Set<ChatUID>), persistUnselected: this.persistUnselected, ignoreScope: this.useGlobalIgnore ? 'global' : 'profile' });
+      this.onConfirm(new Set(this.selection as Set<ChatUID>));
       this.close();
     };
 
@@ -314,148 +298,44 @@ export class PreImportSelectionModal extends Modal {
     return Array.from((this.selection as Set<ChatUID>).values());
   }
 
-  private async saveProfile(saveAs: boolean = false) {
-    try {
-      const input = await promptForProfileName(this.app, saveAs ? '' : this.profile.name, this.profile.targetFolder || '');
-      if (!input) return;
-      const { name, folder: targetFolder } = input;
-
-      const store = this.plugin.getProfileStore();
-      const profile: ImportProfile = (await store.get(name)) || { name, include: {}, ignore: {} };
-      profile.targetFolder = targetFolder || profile.targetFolder;
-
-      // includes from selection
-      for (const uid of this.getSelectedUids()) profile.include[uid] = true;
-
-      // optionally persist unselected as ignore
-      if (this.persistUnselected) {
-        const selected = new Set(this.getSelectedUids());
-        const unselected = this.allSummaries.map(s => s.uid).filter(uid => !selected.has(uid));
-        if (this.useGlobalIgnore) {
-          await store.addGlobalIgnores(unselected);
-        } else {
-          for (const uid of unselected) profile.ignore[uid] = true;
-        }
-      }
-
-      await store.save(profile);
-      this.profile = profile;
-      new Notice(`Saved profile: ${name}`);
-    } catch (e) {
-      console.error('Save profile failed', e);
-    }
-  }
-
-  private async applyProfile() {
-    try {
-      const chosen = await chooseProfile(this.app, this.plugin.getProfileStore());
-      if (!chosen) return;
-      const prof = await this.plugin.getProfileStore().get(chosen);
-      if (!prof) return;
-      this.profile = prof;
-      const includeUids = new Set(Object.keys(prof.include || {}));
-      this.selection = includeUids;
-      this.renderList();
-      this.updateCounts();
-    } catch (e) {
-      console.error('Apply profile failed', e);
-    }
-  }
-
-  private async deleteProfile() {
-    try {
-      const toDelete = await chooseProfile(this.app, this.plugin.getProfileStore(), 'Delete profile');
-      if (!toDelete) return;
-      await this.plugin.getProfileStore().delete(toDelete);
-      if (this.profile.name === toDelete) {
-        const active = await this.plugin.getProfileStore().getActive();
-        this.profile = active;
-        this.selection = new Set<ChatUID>();
-      }
-      this.renderList();
-      this.updateCounts();
-    } catch (e) {
-      console.error('Delete profile failed', e);
-    }
-  }
-
-  private async addToProfile() {
-    try {
-      const chosen = await chooseProfile(this.app, this.plugin.getProfileStore(), 'Add selection to profile');
-      if (!chosen) return;
-      const store = this.plugin.getProfileStore();
-      const prof = (await store.get(chosen)) || { name: chosen, include: {}, ignore: {} };
-      for (const uid of this.getSelectedUids()) prof.include[uid] = true;
-      await store.save(prof);
-      new Notice(`Added ${this.getSelectedUids().length} chats to ${chosen}`);
-    } catch (e) {
-      console.error('Add to profile failed', e);
-    }
-  }
+  
 }
 
-// Simple input modal for profile name and folder
-class ProfileNameModal extends Modal {
-  private nameInput!: TextComponent;
-  private folderInput!: TextComponent;
-  private result: { name: string; folder: string } | null = null;
-  constructor(app: App, private initialName: string, private initialFolder: string, private onSubmit: (res: {name: string; folder: string}) => void) {
+class ManageGlobalExcludeModal extends Modal {
+  private listEl!: HTMLElement;
+  private keepSet = new Set<string>();
+  constructor(app: App, private current: Record<string, true>, private summaries: ChatSummary[], private onSave: (newSet: Record<string, true>) => void) {
     super(app);
   }
   onOpen(): void {
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.createEl('h3', { text: 'Save Import Profile' });
-    new Setting(contentEl).setName('Profile name').addText(t => {
-      this.nameInput = t;
-      t.setValue(this.initialName || '').onChange(() => {});
-    });
-    new Setting(contentEl).setName('Target folder').setDesc('Vault-relative (optional)').addText(t => {
-      this.folderInput = t;
-      t.setValue(this.initialFolder || '').onChange(() => {});
-    });
+    contentEl.createEl('h3', { text: 'Manage Global Exclude' });
+    this.listEl = contentEl.createDiv();
+    this.listEl.style.maxHeight = '50vh';
+    this.listEl.style.overflow = 'auto';
+    const rows = Object.keys(this.current);
+    for (const uid of rows) {
+      const row = this.listEl.createDiv();
+      row.style.display = 'flex';
+      row.style.gap = '8px';
+      const cb = row.createEl('input');
+      cb.type = 'checkbox';
+      cb.checked = true;
+      cb.onchange = () => { if (cb.checked) this.keepSet.add(uid); else this.keepSet.delete(uid); };
+      const title = this.summaries.find(s => s.uid === uid)?.title || uid;
+      row.createEl('div', { text: title });
+      this.keepSet.add(uid);
+    }
     const buttons = contentEl.createDiv();
     const cancel = buttons.createEl('button', { text: 'Cancel' });
-    cancel.onclick = () => { this.close(); };
+    cancel.onclick = () => this.close();
     const save = buttons.createEl('button', { text: 'Save', cls: 'mod-cta' });
     save.onclick = () => {
-      const name = (this.nameInput.getValue() || '').trim();
-      const folder = (this.folderInput.getValue() || '').trim();
-      if (!name) { new Notice('Profile name is required'); return; }
-      this.result = { name, folder };
-      this.onSubmit(this.result);
+      const newSet: Record<string, true> = {} as any;
+      for (const uid of Array.from(this.keepSet)) newSet[uid] = true as any;
+      this.onSave(newSet);
       this.close();
     };
   }
-}
-
-function promptForProfileName(app: App, name: string, folder: string): Promise<{name: string; folder: string} | null> {
-  return new Promise(resolve => {
-    const modal = new ProfileNameModal(app, name, folder, (res) => resolve(res));
-    modal.onClose = () => { if (!(modal as any).result) resolve(null); };
-    modal.open();
-  });
-}
-
-class ProfileSuggestModal extends SuggestModal<string> {
-  constructor(app: App, private options: string[], private title: string, private onChoose: (value: string) => void) {
-    super(app);
-    this.setPlaceholder(this.title);
-  }
-  getSuggestions(query: string): string[] {
-    const q = query.toLowerCase();
-    return this.options.filter(o => o.toLowerCase().includes(q));
-  }
-  renderSuggestion(value: string, el: HTMLElement) { el.createEl('div', { text: value }); }
-  onChooseSuggestion(item: string) { this.onChoose(item); }
-}
-
-async function chooseProfile(app: App, store: any, title: string = 'Choose profile'): Promise<string | null> {
-  const names: string[] = await store.list();
-  if (!names || names.length === 0) return null;
-  return new Promise(resolve => {
-    const modal = new ProfileSuggestModal(app, names, title, (v) => resolve(v));
-    modal.onClose = () => resolve(null);
-    modal.open();
-  });
 }

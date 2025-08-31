@@ -244,14 +244,7 @@ export default class NexusAiChatImporterPlugin extends Plugin {
         input.click();
     }
 
-    openChatManagementModal(): void {
-        new ChatManagementModal(this).open();
-    }
-
-    async openProfileSwitchModal(): Promise<void> {
-        const profiles = await this.profileStore.list();
-        new ProfileSwitchModal(this, profiles).open();
-    }
+    // Chat management and profile switching removed in filter_and_select branch
 
     /**
      * Sort files by timestamp (same logic as ImportService)

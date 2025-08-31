@@ -112,16 +112,13 @@ export class ImportService {
             const summaries = await this.buildChatSummaries(rawConversations, provider);
             try { new Notice(`Loaded ${summaries.length} chats from archive`, 2500); } catch {}
 
-            // Load active profile for preselection
-            const profile = await this.plugin.getProfileStore().getActive();
-
             // Open pre-import selection UI and wait for confirmation
-            const result = await new Promise<{ selected: Set<ChatUID>, persistUnselected: boolean, ignoreScope: 'profile'|'global' }>((resolve) => {
-                new PreImportSelectionModal(this.plugin, provider, summaries, profile, (sel) => resolve(sel)).open();
+            const selected = await new Promise<Set<ChatUID>>((resolve) => {
+                new PreImportSelectionModal(this.plugin, provider, summaries, (sel) => resolve(sel)).open();
             });
 
             // Filter conversations to selected set
-            const selectedSet = new Set(result.selected);
+            const selectedSet = new Set(selected);
             const adapter = this.providerRegistry.getAdapter(provider)!;
             const filteredRaw = rawConversations.filter(c => selectedSet.has(adapter.getId(c)));
             if (filteredRaw.length === 0) {
@@ -129,36 +126,7 @@ export class ImportService {
                 return;
             }
 
-            // Persist include/ignore to active profile
-            try {
-                const active = await this.plugin.getProfileStore().getActive();
-                active.include = active.include || {};
-                active.ignore = active.ignore || {};
-                // Build UID lists from current archive
-                const allUids: string[] = rawConversations.map(c => adapter.getId(c));
-                // Always persist includes for selected
-                for (const uid of allUids) {
-                    if (selectedSet.has(uid)) {
-                        active.include[uid] = true;
-                        delete active.ignore[uid];
-                    }
-                }
-                // Conditionally persist unselected as ignore
-                if (result.persistUnselected) {
-                    const unselected = allUids.filter(uid => !selectedSet.has(uid));
-                    if (result.ignoreScope === 'global') {
-                        await this.plugin.getProfileStore().addGlobalIgnores(unselected);
-                    } else {
-                        for (const uid of unselected) {
-                            active.ignore[uid] = true;
-                            delete active.include[uid];
-                        }
-                    }
-                }
-                await this.plugin.getProfileStore().save(active);
-            } catch (e) {
-                this.plugin.logger.warn('Failed to persist selection to profile', e);
-            }
+            // No profile persistence in this branch; global excludes handled via modal actions
 
             // Now run the actual import with progress modal
             progressModal = new ImportProgressModal(this.plugin.app, file.name);

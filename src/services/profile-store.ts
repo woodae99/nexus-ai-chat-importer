@@ -110,4 +110,10 @@ export class ProfileStore {
         const state = await this.readState();
         return state.globalIgnores || {};
     }
+
+    async setGlobalIgnores(map: Record<string, true>): Promise<void> {
+        const state = await this.readState();
+        state.globalIgnores = map || {} as any;
+        await this.writeState(state);
+    }
 }
