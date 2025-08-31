@@ -3679,12 +3679,12 @@ __export(upgrade_1_2_0_exports, {
   NexusUpgradeModal: () => NexusUpgradeModal,
   Upgrade120: () => Upgrade120
 });
-var import_obsidian19, ConvertToCalloutsOperation, MoveReportsToProviderOperation, UpdateReportLinksOperation, MoveYearFoldersOperation, NexusUpgradeModal, OfferReimportOperation, Upgrade120;
+var import_obsidian20, ConvertToCalloutsOperation, MoveReportsToProviderOperation, UpdateReportLinksOperation, MoveYearFoldersOperation, NexusUpgradeModal, OfferReimportOperation, Upgrade120;
 var init_upgrade_1_2_0 = __esm({
   "src/upgrade/versions/upgrade-1.2.0.ts"() {
     "use strict";
     init_upgrade_interface();
-    import_obsidian19 = require("obsidian");
+    import_obsidian20 = require("obsidian");
     ConvertToCalloutsOperation = class extends UpgradeOperation {
       constructor() {
         super(...arguments);
@@ -4145,7 +4145,7 @@ ${cleanContent}`;
         }
       }
     };
-    NexusUpgradeModal = class extends import_obsidian19.Modal {
+    NexusUpgradeModal = class extends import_obsidian20.Modal {
       constructor(app, plugin, version, resolve) {
         super(app);
         this.plugin = plugin;
@@ -4186,7 +4186,7 @@ Your conversations will be reorganized with provider structure and modern callou
         } catch (error) {
           console.debug("[NEXUS-DEBUG] Could not fetch release notes from GitHub, using fallback");
         }
-        await import_obsidian19.MarkdownRenderer.render(
+        await import_obsidian20.MarkdownRenderer.render(
           this.app,
           message,
           this.contentEl,
@@ -4264,7 +4264,7 @@ __export(main_exports, {
   default: () => NexusAiChatImporterPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian22 = require("obsidian");
+var import_obsidian23 = require("obsidian");
 
 // src/config/constants.ts
 var DEFAULT_SETTINGS = {
@@ -4687,7 +4687,7 @@ var EventHandlers = class {
 };
 
 // src/services/import-service.ts
-var import_obsidian13 = require("obsidian");
+var import_obsidian14 = require("obsidian");
 var import_jszip = __toESM(require_jszip_min());
 init_utils();
 init_dialogs();
@@ -6240,7 +6240,17 @@ var ChatGPTAdapter = class {
     return !!(sample.mapping && sample.create_time && sample.update_time && sample.title);
   }
   getId(chat) {
-    return chat.id || "";
+    if (chat.id && typeof chat.id === "string" && chat.id.length > 0)
+      return chat.id;
+    if (chat.conversation_id && typeof chat.conversation_id === "string")
+      return chat.conversation_id;
+    const base = `${chat.title || "untitled"}|${Math.floor(chat.create_time || 0)}|${chat.mapping ? Object.keys(chat.mapping).length : 0}`;
+    let h = 0;
+    for (let i = 0; i < base.length; i++) {
+      h = (h << 5) - h + base.charCodeAt(i);
+      h |= 0;
+    }
+    return `gpt-${Math.abs(h)}`;
   }
   getTitle(chat) {
     return chat.title || "Untitled";
@@ -7997,6 +8007,420 @@ var ImportProgressModal = class extends import_obsidian12.Modal {
   }
 };
 
+// src/ui/pre-import-selection-modal.ts
+var import_obsidian13 = require("obsidian");
+var PreImportSelectionModal = class extends import_obsidian13.Modal {
+  constructor(plugin, provider, summaries, profile, onConfirm) {
+    var _a;
+    super(plugin.app);
+    this.onConfirm = onConfirm;
+    this.filtered = [];
+    this.selection = /* @__PURE__ */ new Set();
+    this.keyword = "";
+    this.sortKey = "updatedAt";
+    this.sortDir = "desc";
+    this.persistUnselected = false;
+    this.useGlobalIgnore = false;
+    this.globalIgnores = {};
+    this.plugin = plugin;
+    this.provider = provider;
+    this.profile = profile;
+    this.allSummaries = summaries;
+    this.ensureSelectionSet();
+    for (const s of this.allSummaries) {
+      if ((_a = profile.ignore) == null ? void 0 : _a[s.uid])
+        continue;
+      if (!profile.include || profile.include[s.uid] || Object.keys(profile.include).length === 0) {
+        this.selection.add(s.uid);
+      }
+    }
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("nexus-preimport-modal");
+    this.plugin.getProfileStore().listGlobalIgnores().then((gi) => {
+      this.globalIgnores = gi || {};
+      const includeKeys = Object.keys(this.profile.include || {});
+      if (includeKeys.length > 0) {
+        this.selection = new Set(includeKeys);
+      } else {
+        for (const s of this.allSummaries) {
+          if (this.globalIgnores[s.uid]) {
+            this.selection.delete(s.uid);
+          }
+        }
+      }
+      this.renderList();
+      this.updateCounts();
+    }).catch(() => {
+    });
+    const modalEl = this.modalEl;
+    if (modalEl) {
+      modalEl.style.width = "80vw";
+      modalEl.style.maxWidth = "80vw";
+      modalEl.style.maxHeight = "85vh";
+    }
+    const header = contentEl.createEl("div");
+    header.createEl("h2", { text: `Select Chats to Import (${this.provider})` });
+    const sub = header.createEl("div", { text: `Active profile: ${this.profile.name}` });
+    sub.style.color = "var(--text-muted)";
+    const loaded = header.createEl("div", { text: `Loaded ${this.allSummaries.length} chats from archive` });
+    loaded.style.color = "var(--text-accent)";
+    loaded.style.fontWeight = "600";
+    const controls = contentEl.createDiv();
+    controls.style.display = "flex";
+    controls.style.gap = "8px";
+    controls.style.alignItems = "center";
+    const filterSetting = new import_obsidian13.Setting(controls).setName("Filter");
+    const input = new import_obsidian13.TextComponent(filterSetting.controlEl);
+    input.setPlaceholder("Filter by title or keyword\u2026");
+    input.inputEl.style.width = "220px";
+    input.onChange((v) => {
+      this.keyword = v.trim().toLowerCase();
+      this.applyFilters();
+      this.renderList();
+      this.updateCounts();
+    });
+    const sortSetting = new import_obsidian13.Setting(controls).setName("Sort");
+    const sortSelect = sortSetting.controlEl.createEl("select");
+    const options = [
+      { key: "updatedAt", dir: "desc", label: "Updated (newest)" },
+      { key: "updatedAt", dir: "asc", label: "Updated (oldest)" },
+      { key: "createdAt", dir: "desc", label: "Created (newest)" },
+      { key: "createdAt", dir: "asc", label: "Created (oldest)" },
+      { key: "title", dir: "asc", label: "Title (A\u2192Z)" },
+      { key: "title", dir: "desc", label: "Title (Z\u2192A)" }
+    ];
+    for (const opt of options) {
+      const el = sortSelect.createEl("option", { text: opt.label });
+      el.value = `${opt.key}:${opt.dir}`;
+      if (opt.key === this.sortKey && opt.dir === this.sortDir)
+        el.selected = true;
+    }
+    sortSelect.onchange = () => {
+      const [k, d] = sortSelect.value.split(":");
+      this.sortKey = k;
+      this.sortDir = d;
+      this.applyFilters();
+      this.renderList();
+    };
+    const bulk = new import_obsidian13.Setting(controls).setName("Bulk");
+    bulk.addButton((b) => b.setButtonText("Select all in view").onClick(() => {
+      for (const s of this.filtered)
+        this.selection.add(s.uid);
+      this.renderList();
+      this.updateCounts();
+    }));
+    bulk.addButton((b) => b.setButtonText("Clear selection in view").onClick(() => {
+      for (const s of this.filtered)
+        this.selection.delete(s.uid);
+      this.renderList();
+      this.updateCounts();
+    }));
+    const globalSel = new import_obsidian13.Setting(controls).setName("Global");
+    globalSel.addButton((b) => b.setButtonText("Select all (all chats)").onClick(() => {
+      this.selection = new Set(this.allSummaries.map((s) => s.uid));
+      this.renderList();
+      this.updateCounts();
+    }));
+    globalSel.addButton((b) => b.setButtonText("Clear all").onClick(() => {
+      this.selection = /* @__PURE__ */ new Set();
+      this.renderList();
+      this.updateCounts();
+    }));
+    const persist = new import_obsidian13.Setting(controls).setName("Persist unselected as ignore");
+    persist.addToggle((t) => t.setValue(this.persistUnselected).onChange((v) => {
+      this.persistUnselected = v;
+    }));
+    const scope = new import_obsidian13.Setting(controls).setName("Ignore scope");
+    scope.addDropdown((d) => {
+      d.addOption("profile", "Profile");
+      d.addOption("global", "Global");
+      d.setValue("profile");
+      d.onChange((v) => {
+        this.useGlobalIgnore = v === "global";
+      });
+    });
+    this.countEl = contentEl.createDiv();
+    this.countEl.style.margin = "6px 0";
+    this.countEl.style.color = "var(--text-normal)";
+    this.countEl.style.fontWeight = "500";
+    this.listEl = contentEl.createDiv();
+    this.listEl.style.maxHeight = "60vh";
+    this.listEl.style.overflow = "auto";
+    this.listEl.style.border = "1px solid var(--background-modifier-border)";
+    this.listEl.style.borderRadius = "6px";
+    this.listEl.style.padding = "6px";
+    const footer = contentEl.createDiv();
+    footer.style.display = "flex";
+    footer.style.justifyContent = "space-between";
+    footer.style.alignItems = "center";
+    footer.style.marginTop = "10px";
+    const left = footer.createDiv();
+    left.style.color = "var(--text-muted)";
+    left.textContent = "Review selection, then import";
+    const right = footer.createDiv();
+    const cancelBtn = right.createEl("button", { text: "Cancel" });
+    cancelBtn.onclick = () => this.close();
+    this.importBtn = right.createEl("button", { text: "Import selected", cls: "mod-cta" });
+    this.importBtn.onclick = () => {
+      this.onConfirm({ selected: new Set(this.selection), persistUnselected: this.persistUnselected, ignoreScope: this.useGlobalIgnore ? "global" : "profile" });
+      this.close();
+    };
+    const actions = contentEl.createDiv();
+    actions.style.display = "flex";
+    actions.style.gap = "8px";
+    actions.style.alignItems = "center";
+    actions.style.marginTop = "8px";
+    new import_obsidian13.Setting(actions).setName("Profile actions").addButton((b) => b.setButtonText("Save Profile").onClick(() => this.saveProfile())).addButton((b) => b.setButtonText("Save As\u2026").onClick(() => this.saveProfile(true))).addButton((b) => b.setButtonText("Add to\u2026").onClick(() => this.addToProfile())).addButton((b) => b.setButtonText("Apply\u2026").onClick(() => this.applyProfile())).addButton((b) => b.setButtonText("Delete\u2026").onClick(() => this.deleteProfile()));
+    this.applyFilters();
+    this.renderList();
+    this.updateCounts();
+  }
+  applyFilters() {
+    this.ensureSelectionSet();
+    const kw = this.keyword;
+    const base = this.allSummaries;
+    let res = kw ? base.filter((s) => (s.title || "").toLowerCase().includes(kw) || (s.keywordsSample || "").toLowerCase().includes(kw)) : [...base];
+    const dir = this.sortDir === "asc" ? 1 : -1;
+    res.sort((a, b) => {
+      if (this.sortKey === "title") {
+        return a.title.localeCompare(b.title) * dir;
+      }
+      const av = (this.sortKey === "updatedAt" ? a.updatedAt : a.createdAt) || 0;
+      const bv = (this.sortKey === "updatedAt" ? b.updatedAt : b.createdAt) || 0;
+      return (av - bv) * dir;
+    });
+    this.filtered = res;
+  }
+  renderList() {
+    this.listEl.empty();
+    this.ensureSelectionSet();
+    if (this.filtered.length === 0) {
+      this.listEl.createEl("div", { text: "No chats match the current filter." });
+      return;
+    }
+    const maxRender = 2e3;
+    const toRender = this.filtered.slice(0, maxRender);
+    for (const s of toRender) {
+      const row = this.listEl.createDiv();
+      row.style.display = "flex";
+      row.style.alignItems = "center";
+      row.style.gap = "8px";
+      row.style.padding = "4px 2px";
+      const cb = row.createEl("input");
+      cb.type = "checkbox";
+      cb.checked = this.selection.has(s.uid);
+      cb.onchange = () => {
+        const set = this.selection;
+        if (cb.checked)
+          set.add(s.uid);
+        else
+          set.delete(s.uid);
+        this.updateCounts();
+      };
+      const main = row.createDiv();
+      main.style.flex = "1";
+      main.createEl("div", { text: s.title || "(Untitled)" });
+      const meta = main.createEl("div");
+      meta.style.color = "var(--text-muted)";
+      meta.style.fontSize = "0.85em";
+      const created = s.createdAt ? new Date(s.createdAt).toISOString().slice(0, 10) : "-";
+      const updated = s.updatedAt ? new Date(s.updatedAt).toISOString().slice(0, 10) : "-";
+      const status = s.status ? ` \u2022 Status: ${s.status}` : "";
+      meta.textContent = `Created: ${created} \u2022 Updated: ${updated}${status}`;
+    }
+    if (this.filtered.length > maxRender) {
+      const note = this.listEl.createDiv();
+      note.style.color = "var(--text-muted)";
+      note.style.marginTop = "6px";
+      note.textContent = `Showing first ${maxRender} of ${this.filtered.length}. Refine filters to narrow results.`;
+    }
+  }
+  updateCounts() {
+    this.ensureSelectionSet();
+    const total = this.allSummaries.length;
+    const shown = this.filtered.length;
+    const selectedInAll = this.selection.size;
+    this.countEl.textContent = `Showing ${shown} of ${total} \u2022 Selected ${selectedInAll}`;
+    this.importBtn.textContent = `Import selected (${selectedInAll})`;
+    this.importBtn.disabled = selectedInAll === 0;
+  }
+  ensureSelectionSet() {
+    const sel = this.selection;
+    if (!sel || typeof sel.has !== "function" || typeof sel.add !== "function" || typeof sel.delete !== "function") {
+      let initial = [];
+      if (Array.isArray(sel)) {
+        initial = sel;
+      } else if (sel && typeof sel === "object") {
+        initial = Object.keys(sel);
+      }
+      this.selection = new Set(initial);
+    }
+  }
+  getSelectedUids() {
+    return Array.from(this.selection.values());
+  }
+  async saveProfile(saveAs = false) {
+    try {
+      const input = await promptForProfileName(this.app, saveAs ? "" : this.profile.name, this.profile.targetFolder || "");
+      if (!input)
+        return;
+      const { name, folder: targetFolder } = input;
+      const store = this.plugin.getProfileStore();
+      const profile = await store.get(name) || { name, include: {}, ignore: {} };
+      profile.targetFolder = targetFolder || profile.targetFolder;
+      for (const uid of this.getSelectedUids())
+        profile.include[uid] = true;
+      if (this.persistUnselected) {
+        const selected = new Set(this.getSelectedUids());
+        const unselected = this.allSummaries.map((s) => s.uid).filter((uid) => !selected.has(uid));
+        if (this.useGlobalIgnore) {
+          await store.addGlobalIgnores(unselected);
+        } else {
+          for (const uid of unselected)
+            profile.ignore[uid] = true;
+        }
+      }
+      await store.save(profile);
+      this.profile = profile;
+      new import_obsidian13.Notice(`Saved profile: ${name}`);
+    } catch (e) {
+      console.error("Save profile failed", e);
+    }
+  }
+  async applyProfile() {
+    try {
+      const chosen = await chooseProfile(this.app, this.plugin.getProfileStore());
+      if (!chosen)
+        return;
+      const prof = await this.plugin.getProfileStore().get(chosen);
+      if (!prof)
+        return;
+      this.profile = prof;
+      const includeUids = new Set(Object.keys(prof.include || {}));
+      this.selection = includeUids;
+      this.renderList();
+      this.updateCounts();
+    } catch (e) {
+      console.error("Apply profile failed", e);
+    }
+  }
+  async deleteProfile() {
+    try {
+      const toDelete = await chooseProfile(this.app, this.plugin.getProfileStore(), "Delete profile");
+      if (!toDelete)
+        return;
+      await this.plugin.getProfileStore().delete(toDelete);
+      if (this.profile.name === toDelete) {
+        const active = await this.plugin.getProfileStore().getActive();
+        this.profile = active;
+        this.selection = /* @__PURE__ */ new Set();
+      }
+      this.renderList();
+      this.updateCounts();
+    } catch (e) {
+      console.error("Delete profile failed", e);
+    }
+  }
+  async addToProfile() {
+    try {
+      const chosen = await chooseProfile(this.app, this.plugin.getProfileStore(), "Add selection to profile");
+      if (!chosen)
+        return;
+      const store = this.plugin.getProfileStore();
+      const prof = await store.get(chosen) || { name: chosen, include: {}, ignore: {} };
+      for (const uid of this.getSelectedUids())
+        prof.include[uid] = true;
+      await store.save(prof);
+      new import_obsidian13.Notice(`Added ${this.getSelectedUids().length} chats to ${chosen}`);
+    } catch (e) {
+      console.error("Add to profile failed", e);
+    }
+  }
+};
+var ProfileNameModal = class extends import_obsidian13.Modal {
+  constructor(app, initialName, initialFolder, onSubmit) {
+    super(app);
+    this.initialName = initialName;
+    this.initialFolder = initialFolder;
+    this.onSubmit = onSubmit;
+    this.result = null;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h3", { text: "Save Import Profile" });
+    new import_obsidian13.Setting(contentEl).setName("Profile name").addText((t) => {
+      this.nameInput = t;
+      t.setValue(this.initialName || "").onChange(() => {
+      });
+    });
+    new import_obsidian13.Setting(contentEl).setName("Target folder").setDesc("Vault-relative (optional)").addText((t) => {
+      this.folderInput = t;
+      t.setValue(this.initialFolder || "").onChange(() => {
+      });
+    });
+    const buttons = contentEl.createDiv();
+    const cancel = buttons.createEl("button", { text: "Cancel" });
+    cancel.onclick = () => {
+      this.close();
+    };
+    const save = buttons.createEl("button", { text: "Save", cls: "mod-cta" });
+    save.onclick = () => {
+      const name = (this.nameInput.getValue() || "").trim();
+      const folder = (this.folderInput.getValue() || "").trim();
+      if (!name) {
+        new import_obsidian13.Notice("Profile name is required");
+        return;
+      }
+      this.result = { name, folder };
+      this.onSubmit(this.result);
+      this.close();
+    };
+  }
+};
+function promptForProfileName(app, name, folder) {
+  return new Promise((resolve) => {
+    const modal = new ProfileNameModal(app, name, folder, (res) => resolve(res));
+    modal.onClose = () => {
+      if (!modal.result)
+        resolve(null);
+    };
+    modal.open();
+  });
+}
+var ProfileSuggestModal = class extends import_obsidian13.SuggestModal {
+  constructor(app, options, title, onChoose) {
+    super(app);
+    this.options = options;
+    this.title = title;
+    this.onChoose = onChoose;
+    this.setPlaceholder(this.title);
+  }
+  getSuggestions(query) {
+    const q = query.toLowerCase();
+    return this.options.filter((o) => o.toLowerCase().includes(q));
+  }
+  renderSuggestion(value, el) {
+    el.createEl("div", { text: value });
+  }
+  onChooseSuggestion(item) {
+    this.onChoose(item);
+  }
+};
+async function chooseProfile(app, store, title = "Choose profile") {
+  const names = await store.list();
+  if (!names || names.length === 0)
+    return null;
+  return new Promise((resolve) => {
+    const modal = new ProfileSuggestModal(app, names, title, (v) => resolve(v));
+    modal.onClose = () => resolve(null);
+    modal.open();
+  });
+}
+
 // src/services/import-service.ts
 var ImportService = class {
   constructor(plugin) {
@@ -8038,21 +8462,14 @@ var ImportService = class {
   async handleZipFile(file, forcedProvider) {
     this.importReport = new ImportReport();
     const storage = this.plugin.getStorageService();
-    const progressModal = new ImportProgressModal(this.plugin.app, file.name);
-    const progressCallback = progressModal.getProgressCallback();
-    progressModal.open();
+    let progressModal = null;
+    let progressCallback;
     try {
-      progressCallback({
-        phase: "validation",
-        title: "Validating file...",
-        detail: "Checking file hash and import history"
-      });
       const fileHash = await getFileHash(file);
       const foundByHash = storage.isArchiveImported(fileHash);
       const foundByName = storage.isArchiveImported(file.name);
       const isReprocess = foundByHash || foundByName;
       if (isReprocess) {
-        progressModal.close();
         const shouldReimport = await showDialog(
           this.plugin.app,
           "confirmation",
@@ -8066,21 +8483,72 @@ var ImportService = class {
           { button1: "Let's do this", button2: "Forget it" }
         );
         if (!shouldReimport) {
-          new import_obsidian13.Notice("Import cancelled.");
+          new import_obsidian14.Notice("Import cancelled.");
           return;
         }
-        progressModal.open();
       }
-      progressCallback({
-        phase: "validation",
-        title: "Validating ZIP structure...",
-        detail: "Checking file format and contents"
-      });
       const zip = await this.validateZipFile(file, forcedProvider);
-      await this.processConversations(zip, file, isReprocess, forcedProvider, progressCallback);
+      const rawConversations = await this.extractRawConversationsFromZip(zip);
+      if (forcedProvider) {
+        this.validateProviderMatch(rawConversations, forcedProvider);
+      }
+      const provider = forcedProvider || this.providerRegistry.detectProvider(rawConversations);
+      if (provider === "unknown") {
+        throw new NexusAiChatImporterError(
+          "Unknown provider",
+          "Could not detect provider from the archive."
+        );
+      }
+      const summaries = await this.buildChatSummaries(rawConversations, provider);
+      try {
+        new import_obsidian14.Notice(`Loaded ${summaries.length} chats from archive`, 2500);
+      } catch (e) {
+      }
+      const profile = await this.plugin.getProfileStore().getActive();
+      const result = await new Promise((resolve) => {
+        new PreImportSelectionModal(this.plugin, provider, summaries, profile, (sel) => resolve(sel)).open();
+      });
+      const selectedSet = new Set(result.selected);
+      const adapter = this.providerRegistry.getAdapter(provider);
+      const filteredRaw = rawConversations.filter((c) => selectedSet.has(adapter.getId(c)));
+      if (filteredRaw.length === 0) {
+        new import_obsidian14.Notice("No chats selected. Import cancelled.");
+        return;
+      }
+      try {
+        const active = await this.plugin.getProfileStore().getActive();
+        active.include = active.include || {};
+        active.ignore = active.ignore || {};
+        const allUids = rawConversations.map((c) => adapter.getId(c));
+        for (const uid of allUids) {
+          if (selectedSet.has(uid)) {
+            active.include[uid] = true;
+            delete active.ignore[uid];
+          }
+        }
+        if (result.persistUnselected) {
+          const unselected = allUids.filter((uid) => !selectedSet.has(uid));
+          if (result.ignoreScope === "global") {
+            await this.plugin.getProfileStore().addGlobalIgnores(unselected);
+          } else {
+            for (const uid of unselected) {
+              active.ignore[uid] = true;
+              delete active.include[uid];
+            }
+          }
+        }
+        await this.plugin.getProfileStore().save(active);
+      } catch (e) {
+        this.plugin.logger.warn("Failed to persist selection to profile", e);
+      }
+      progressModal = new ImportProgressModal(this.plugin.app, file.name);
+      progressCallback = progressModal.getProgressCallback();
+      progressModal.open();
+      progressCallback({ phase: "validation", title: "Preparing import\u2026", detail: `Importing ${filteredRaw.length} selected chats` });
+      await this.processConversationsFromRaw(zip, file, filteredRaw, isReprocess, provider, progressCallback);
       storage.addImportedArchive(fileHash, file.name);
       await this.plugin.saveSettings();
-      progressCallback({
+      progressCallback == null ? void 0 : progressCallback({
         phase: "complete",
         title: "Import completed successfully!",
         detail: `Processed ${this.conversationProcessor.getCounters().totalNewConversationsToImport + this.conversationProcessor.getCounters().totalExistingConversationsToUpdate} conversations`
@@ -8088,19 +8556,20 @@ var ImportService = class {
     } catch (error) {
       const message = error instanceof NexusAiChatImporterError ? error.message : error instanceof Error ? error.message : "An unknown error occurred";
       this.plugin.logger.error("Error handling zip file", { message });
-      progressCallback({
+      progressCallback == null ? void 0 : progressCallback({
         phase: "error",
         title: "Import failed",
         detail: message
       });
-      setTimeout(() => progressModal.close(), 5e3);
+      try {
+        new import_obsidian14.Notice(message, 5e3);
+      } catch (e) {
+      }
+      if (progressModal) {
+        setTimeout(() => progressModal == null ? void 0 : progressModal.close(), 5e3);
+      }
     } finally {
       await this.writeImportReport(file.name);
-      if (!progressModal.isComplete) {
-        new import_obsidian13.Notice(
-          this.importReport.hasErrors() ? "An error occurred during import. Please check the log file for details." : "Import completed. Log file created in the archive folder."
-        );
-      }
     }
   }
   async validateZipFile(file, forcedProvider) {
@@ -8140,23 +8609,14 @@ var ImportService = class {
       }
     }
   }
-  async processConversations(zip, file, isReprocess, forcedProvider, progressCallback) {
+  async processConversationsFromRaw(zip, file, rawConversations, isReprocess, provider, progressCallback) {
     try {
-      progressCallback == null ? void 0 : progressCallback({
-        phase: "scanning",
-        title: "Extracting conversations...",
-        detail: "Reading conversation data from ZIP file"
-      });
-      const rawConversations = await this.extractRawConversationsFromZip(zip);
       progressCallback == null ? void 0 : progressCallback({
         phase: "scanning",
         title: "Scanning existing conversations...",
         detail: "Checking vault for existing conversations",
         total: rawConversations.length
       });
-      if (forcedProvider) {
-        this.validateProviderMatch(rawConversations, forcedProvider);
-      }
       progressCallback == null ? void 0 : progressCallback({
         phase: "processing",
         title: "Processing conversations...",
@@ -8169,7 +8629,7 @@ var ImportService = class {
         this.importReport,
         zip,
         isReprocess,
-        forcedProvider,
+        provider,
         progressCallback
       );
       this.importReport = report;
@@ -8197,8 +8657,75 @@ var ImportService = class {
    * TODO: Make this provider-aware when adding Claude support
    */
   async extractRawConversationsFromZip(zip) {
-    const conversationsJson = await zip.file("conversations.json").async("string");
-    return JSON.parse(conversationsJson);
+    const keys = Object.keys(zip.files);
+    const convoKey = keys.find((k) => /(^|\/)conversations\.json$/i.test(k));
+    if (!convoKey)
+      return [];
+    const file = zip.file(convoKey);
+    if (!file)
+      return [];
+    const text = await file.async("string");
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed))
+        return parsed;
+      if (Array.isArray(parsed == null ? void 0 : parsed.conversations))
+        return parsed.conversations;
+      if (Array.isArray(parsed == null ? void 0 : parsed.data))
+        return parsed.data;
+      if ((parsed == null ? void 0 : parsed.mapping) && ((parsed == null ? void 0 : parsed.id) || (parsed == null ? void 0 : parsed.conversation_id))) {
+        return [parsed];
+      }
+    } catch (_) {
+      const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+      const convos = [];
+      for (const line of lines) {
+        try {
+          const obj = JSON.parse(line);
+          convos.push(obj);
+        } catch (e) {
+        }
+      }
+      if (convos.length > 0)
+        return convos;
+    }
+    return [];
+  }
+  async buildChatSummaries(raw, provider) {
+    const adapter = this.providerRegistry.getAdapter(provider);
+    const summaries = [];
+    const storage = this.plugin.getStorageService();
+    const profile = await this.plugin.getProfileStore().getActive();
+    const globalIgnores = await this.plugin.getProfileStore().listGlobalIgnores();
+    for (const chat of raw) {
+      try {
+        const uid = adapter.getId(chat);
+        const title = adapter.getTitle(chat) || "Untitled";
+        const createdAtSec = adapter.getCreateTime(chat) || 0;
+        const updatedAtSec = adapter.getUpdateTime(chat) || 0;
+        let status = "new";
+        if (profile.ignore && profile.ignore[uid] || globalIgnores && globalIgnores[uid]) {
+          status = "ignored";
+        } else {
+          const existing = await storage.getConversationById(uid);
+          if (existing) {
+            status = existing.updateTime < updatedAtSec ? "updated" : "imported";
+          }
+        }
+        summaries.push({
+          uid,
+          title,
+          createdAt: createdAtSec * 1e3,
+          updatedAt: updatedAtSec * 1e3,
+          model: void 0,
+          messageCount: 0,
+          status,
+          sourceRef: { exportPath: "conversations.json" }
+        });
+      } catch (_) {
+      }
+    }
+    return summaries;
   }
   /**
    * Validate that the forced provider matches the actual content structure
@@ -8245,7 +8772,7 @@ var ReportWriter = class {
     const folderResult = await ensureFolderExists2(reportInfo.folderPath, this.plugin.app.vault);
     if (!folderResult.success) {
       this.plugin.logger.error(`Failed to create or access log folder: ${reportInfo.folderPath}`, folderResult.error);
-      new import_obsidian13.Notice("Failed to create log file. Check console for details.");
+      new import_obsidian14.Notice("Failed to create log file. Check console for details.");
       return;
     }
     let logFilePath = `${reportInfo.folderPath}/${reportInfo.baseFileName}`;
@@ -8273,7 +8800,7 @@ ${report.generateReportContent()}
       await this.plugin.app.vault.create(logFilePath, logContent);
     } catch (error) {
       this.plugin.logger.error(`Failed to write import log`, error.message);
-      new import_obsidian13.Notice("Failed to create log file. Check console for details.");
+      new import_obsidian14.Notice("Failed to create log file. Check console for details.");
     }
   }
   getReportGenerationInfo(zipFileName, provider) {
@@ -8627,11 +9154,11 @@ var StorageService = class {
 };
 
 // src/services/profile-store.ts
-var import_obsidian14 = require("obsidian");
+var import_obsidian15 = require("obsidian");
 var ProfileStore = class {
   constructor(plugin) {
     this.plugin = plugin;
-    const base = (0, import_obsidian14.normalizePath)(`${this.plugin.manifest.id}/data`);
+    const base = (0, import_obsidian15.normalizePath)(`${this.plugin.manifest.id}/data`);
     this.statePath = `${base}/state.json`;
     this.profilesDir = `${base}/profiles`;
   }
@@ -8692,14 +9219,39 @@ var ProfileStore = class {
     }
     await this.writeState(state);
   }
+  async delete(name) {
+    const adapter = this.plugin.app.vault.adapter;
+    const path = `${this.profilesDir}/${name}.json`;
+    if (await adapter.exists(path)) {
+      await adapter.remove(path);
+    }
+    const state = await this.readState();
+    state.profiles = state.profiles.filter((p) => p !== name);
+    if (state.activeProfile === name) {
+      state.activeProfile = state.profiles[0] || "Default";
+    }
+    await this.writeState(state);
+  }
+  async addGlobalIgnores(uids) {
+    const state = await this.readState();
+    state.globalIgnores = state.globalIgnores || {};
+    for (const uid of uids) {
+      state.globalIgnores[uid] = true;
+    }
+    await this.writeState(state);
+  }
+  async listGlobalIgnores() {
+    const state = await this.readState();
+    return state.globalIgnores || {};
+  }
 };
 
 // src/services/materialised-store.ts
-var import_obsidian15 = require("obsidian");
+var import_obsidian16 = require("obsidian");
 var MaterialisedStore = class {
   constructor(plugin) {
     this.plugin = plugin;
-    this.materialisedDir = (0, import_obsidian15.normalizePath)(`${this.plugin.manifest.id}/data/materialised`);
+    this.materialisedDir = (0, import_obsidian16.normalizePath)(`${this.plugin.manifest.id}/data/materialised`);
   }
   async ensureDir() {
     const adapter = this.plugin.app.vault.adapter;
@@ -8724,30 +9276,77 @@ var MaterialisedStore = class {
 };
 
 // src/ui/chat-management-modal.ts
-var import_obsidian16 = require("obsidian");
-var ChatManagementModal = class extends import_obsidian16.Modal {
+var import_obsidian17 = require("obsidian");
+var ChatManagementModal = class extends import_obsidian17.Modal {
   constructor(plugin) {
     super(plugin.app);
     this.plugin = plugin;
   }
   async onOpen() {
     const { contentEl } = this;
-    const profile = await this.plugin.getProfileStore().getActive();
     contentEl.empty();
-    contentEl.createEl("h2", { text: `Chat Management - ${profile.name}` });
-    contentEl.createEl("p", {
-      text: "This is a placeholder for the upcoming chat management interface."
-    });
+    this.containerEl = contentEl.createDiv({ cls: "nexus-chat-management" });
+    this.headerEl = this.containerEl.createDiv({ cls: "nexus-cm-header" });
+    await this.renderHeader();
+    this.summaryEl = this.containerEl.createDiv({ cls: "nexus-cm-summary" });
+    await this.renderSummary();
+    const placeholder = this.containerEl.createDiv({ cls: "nexus-cm-placeholder" });
+    placeholder.createEl("p", { text: "Conversation list and filters coming next." });
   }
   onClose() {
     const { contentEl } = this;
     contentEl.empty();
   }
+  async renderHeader() {
+    this.headerEl.empty();
+    const profile = await this.plugin.getProfileStore().getActive();
+    const title = this.headerEl.createEl("h2", { text: `Chat Management` });
+    title.style.marginBottom = "0.25rem";
+    const subtitle = this.headerEl.createEl("div");
+    subtitle.style.marginBottom = "0.75rem";
+    subtitle.style.color = "var(--text-muted)";
+    subtitle.textContent = `Active profile: ${profile.name}`;
+    new import_obsidian17.Setting(this.headerEl).setName("Actions").addButton(
+      (btn) => btn.setButtonText("Switch Profile").setCta().onClick(async () => {
+        await this.plugin.openProfileSwitchModal();
+        setTimeout(() => this.renderHeader(), 50);
+      })
+    ).addButton(
+      (btn) => btn.setButtonText("Rescan Vault").onClick(async () => {
+        await this.renderSummary(true);
+      })
+    );
+  }
+  async renderSummary(forceRescan = false) {
+    this.summaryEl.empty();
+    const loading = this.summaryEl.createEl("div", { text: "Scanning vault for conversations\u2026" });
+    loading.style.color = "var(--text-muted)";
+    const conversations = await this.plugin.getStorageService().scanExistingConversations();
+    const all = Array.from(conversations.values());
+    const byProvider = {};
+    for (const c of all) {
+      const provider = c.provider || "unknown";
+      byProvider[provider] = (byProvider[provider] || 0) + 1;
+    }
+    this.summaryEl.empty();
+    const summaryHeader = this.summaryEl.createEl("h3", { text: "Vault Summary" });
+    summaryHeader.style.marginBottom = "0.25rem";
+    const totalEl = this.summaryEl.createEl("div", { text: `Total conversations: ${all.length}` });
+    totalEl.style.marginBottom = "0.5rem";
+    if (all.length === 0) {
+      this.summaryEl.createEl("div", { text: "No conversations found in your archive folder yet." });
+      return;
+    }
+    const list = this.summaryEl.createEl("ul");
+    for (const [provider, count] of Object.entries(byProvider)) {
+      list.createEl("li", { text: `${provider}: ${count}` });
+    }
+  }
 };
 
 // src/ui/profile-switch-modal.ts
-var import_obsidian17 = require("obsidian");
-var ProfileSwitchModal = class extends import_obsidian17.SuggestModal {
+var import_obsidian18 = require("obsidian");
+var ProfileSwitchModal = class extends import_obsidian18.SuggestModal {
   constructor(plugin, profiles) {
     super(plugin.app);
     this.plugin = plugin;
@@ -8767,14 +9366,14 @@ var ProfileSwitchModal = class extends import_obsidian17.SuggestModal {
 };
 
 // src/upgrade/incremental-upgrade-manager.ts
-var import_obsidian20 = require("obsidian");
+var import_obsidian21 = require("obsidian");
 init_version_utils();
 init_dialogs();
 init_logger();
 
 // src/upgrade/utils/multi-operation-progress-modal.ts
-var import_obsidian18 = require("obsidian");
-var MultiOperationProgressModal = class extends import_obsidian18.Modal {
+var import_obsidian19 = require("obsidian");
+var MultiOperationProgressModal = class extends import_obsidian19.Modal {
   constructor(app, title, operations) {
     super(app);
     this.canClose = false;
@@ -9076,7 +9675,7 @@ var IncrementalUpgradeManager = class {
     } catch (error) {
       console.error(`[NEXUS-DEBUG] Incremental upgrade FAILED:`, error);
       logger3.error("Error during incremental upgrade:", error);
-      new import_obsidian20.Notice("Upgrade failed - see console for details");
+      new import_obsidian21.Notice("Upgrade failed - see console for details");
       return {
         success: false,
         upgradesExecuted: 0,
@@ -9174,7 +9773,7 @@ var IncrementalUpgradeManager = class {
       }
       const overallSuccess = true;
       progressModal.markComplete(`All operations completed successfully!`);
-      new import_obsidian20.Notice(`Upgrade completed: ${upgradesExecuted} versions processed successfully`);
+      new import_obsidian21.Notice(`Upgrade completed: ${upgradesExecuted} versions processed successfully`);
       return {
         success: overallSuccess,
         upgradesExecuted,
@@ -9386,7 +9985,7 @@ var IncrementalUpgradeManager = class {
       }
     } catch (error) {
       logger3.error("Error showing upgrade dialog:", error);
-      new import_obsidian20.Notice(`Upgraded to Nexus AI Chat Importer v${currentVersion}`);
+      new import_obsidian21.Notice(`Upgraded to Nexus AI Chat Importer v${currentVersion}`);
     }
   }
   /**
@@ -9503,8 +10102,8 @@ Version 1.0.2 introduced new metadata parameters required for certain features. 
 init_logger();
 
 // src/dialogs/provider-selection-dialog.ts
-var import_obsidian21 = require("obsidian");
-var ProviderSelectionDialog = class extends import_obsidian21.Modal {
+var import_obsidian22 = require("obsidian");
+var ProviderSelectionDialog = class extends import_obsidian22.Modal {
   constructor(app, providerRegistry, onProviderSelected) {
     super(app);
     this.selectedProvider = null;
@@ -9536,7 +10135,7 @@ var ProviderSelectionDialog = class extends import_obsidian21.Modal {
     contentEl.empty();
     contentEl.createEl("h2", { text: "Select Archive Provider" });
     this.providers.forEach((provider) => {
-      new import_obsidian21.Setting(contentEl).setName(provider.name).setDesc(this.createProviderDescription(provider)).addButton((button) => {
+      new import_obsidian22.Setting(contentEl).setName(provider.name).setDesc(this.createProviderDescription(provider)).addButton((button) => {
         button.setButtonText("Select").setCta().onClick(() => {
           this.selectedProvider = provider.id;
           this.close();
@@ -9561,7 +10160,7 @@ var ProviderSelectionDialog = class extends import_obsidian21.Modal {
 };
 
 // src/main.ts
-var NexusAiChatImporterPlugin = class extends import_obsidian22.Plugin {
+var NexusAiChatImporterPlugin = class extends import_obsidian23.Plugin {
   constructor(app, manifest) {
     super(app, manifest);
     this.logger = new Logger();

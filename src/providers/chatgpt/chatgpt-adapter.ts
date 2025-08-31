@@ -28,7 +28,17 @@ export class ChatGPTAdapter implements ProviderAdapter<Chat> {
     }
 
     getId(chat: Chat): string {
-        return chat.id || "";
+        // Prefer stable conversation id; fall back to conversation_id, then derive
+        if (chat.id && typeof chat.id === 'string' && chat.id.length > 0) return chat.id;
+        if ((chat as any).conversation_id && typeof (chat as any).conversation_id === 'string') return (chat as any).conversation_id;
+        // Derive a deterministic fallback from title + create_time + mapping size
+        const base = `${chat.title || 'untitled'}|${Math.floor(chat.create_time || 0)}|${chat.mapping ? Object.keys(chat.mapping).length : 0}`;
+        let h = 0;
+        for (let i = 0; i < base.length; i++) {
+            h = ((h << 5) - h) + base.charCodeAt(i);
+            h |= 0;
+        }
+        return `gpt-${Math.abs(h)}`;
     }
 
     getTitle(chat: Chat): string {

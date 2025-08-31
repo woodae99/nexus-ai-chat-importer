@@ -82,4 +82,32 @@ export class ProfileStore {
         }
         await this.writeState(state);
     }
+
+    async delete(name: string): Promise<void> {
+        const adapter = this.plugin.app.vault.adapter;
+        const path = `${this.profilesDir}/${name}.json`;
+        if (await adapter.exists(path)) {
+            await adapter.remove(path);
+        }
+        const state = await this.readState();
+        state.profiles = state.profiles.filter(p => p !== name);
+        if (state.activeProfile === name) {
+            state.activeProfile = state.profiles[0] || 'Default';
+        }
+        await this.writeState(state);
+    }
+
+    async addGlobalIgnores(uids: string[]): Promise<void> {
+        const state = await this.readState();
+        state.globalIgnores = state.globalIgnores || {} as any;
+        for (const uid of uids) {
+            state.globalIgnores[uid] = true as any;
+        }
+        await this.writeState(state);
+    }
+
+    async listGlobalIgnores(): Promise<Record<string, true>> {
+        const state = await this.readState();
+        return state.globalIgnores || {};
+    }
 }

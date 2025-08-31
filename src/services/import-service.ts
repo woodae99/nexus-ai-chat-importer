@@ -10,6 +10,8 @@ import { NexusAiChatImporterError } from "../models/errors";
 import { createProviderRegistry } from "../providers/provider-registry";
 import { ProviderRegistry } from "../providers/provider-adapter";
 import { ImportProgressModal, ImportProgressCallback } from "../ui/import-progress-modal";
+import { PreImportSelectionModal } from "../ui/pre-import-selection-modal";
+import type { ChatSummary, ChatUID, ImportProfile } from "../types";
 import type NexusAiChatImporterPlugin from "../main";
 
 export class ImportService {
@@ -57,19 +59,10 @@ export class ImportService {
     async handleZipFile(file: File, forcedProvider?: string) {
         this.importReport = new ImportReport();
         const storage = this.plugin.getStorageService();
-
-        // Create and show progress modal
-        const progressModal = new ImportProgressModal(this.plugin.app, file.name);
-        const progressCallback = progressModal.getProgressCallback();
-        progressModal.open();
+        let progressModal: ImportProgressModal | null = null;
+        let progressCallback: ImportProgressCallback | undefined;
 
         try {
-            progressCallback({
-                phase: 'validation',
-                title: 'Validating file...',
-                detail: 'Checking file hash and import history'
-            });
-
             const fileHash = await getFileHash(file);
 
             // Check if already imported (hybrid detection for 1.0.x → 1.1.0 compatibility)
@@ -78,8 +71,6 @@ export class ImportService {
             const isReprocess = foundByHash || foundByName;
 
             if (isReprocess) {
-                progressModal.close(); // Close progress modal for user dialog
-
                 const shouldReimport = await showDialog(
                     this.plugin.app,
                     "confirmation",
@@ -97,25 +88,92 @@ export class ImportService {
                     new Notice("Import cancelled.");
                     return;
                 }
-
-                // Reopen progress modal for continued processing
-                progressModal.open();
             }
 
-            progressCallback({
-                phase: 'validation',
-                title: 'Validating ZIP structure...',
-                detail: 'Checking file format and contents'
-            });
-
+            // Validate the zip structure (without UI modal yet)
             const zip = await this.validateZipFile(file, forcedProvider);
 
-            await this.processConversations(zip, file, isReprocess, forcedProvider, progressCallback);
+            // Extract raw conversations
+            const rawConversations = await this.extractRawConversationsFromZip(zip);
+
+            // Validate/Detect provider
+            if (forcedProvider) {
+                this.validateProviderMatch(rawConversations, forcedProvider);
+            }
+            const provider = forcedProvider || this.providerRegistry.detectProvider(rawConversations);
+            if (provider === 'unknown') {
+                throw new NexusAiChatImporterError(
+                    'Unknown provider',
+                    'Could not detect provider from the archive.'
+                );
+            }
+
+            // Build lightweight summaries for selection UI
+            const summaries = await this.buildChatSummaries(rawConversations, provider);
+            try { new Notice(`Loaded ${summaries.length} chats from archive`, 2500); } catch {}
+
+            // Load active profile for preselection
+            const profile = await this.plugin.getProfileStore().getActive();
+
+            // Open pre-import selection UI and wait for confirmation
+            const result = await new Promise<{ selected: Set<ChatUID>, persistUnselected: boolean, ignoreScope: 'profile'|'global' }>((resolve) => {
+                new PreImportSelectionModal(this.plugin, provider, summaries, profile, (sel) => resolve(sel)).open();
+            });
+
+            // Filter conversations to selected set
+            const selectedSet = new Set(result.selected);
+            const adapter = this.providerRegistry.getAdapter(provider)!;
+            const filteredRaw = rawConversations.filter(c => selectedSet.has(adapter.getId(c)));
+            if (filteredRaw.length === 0) {
+                new Notice('No chats selected. Import cancelled.');
+                return;
+            }
+
+            // Persist include/ignore to active profile
+            try {
+                const active = await this.plugin.getProfileStore().getActive();
+                active.include = active.include || {};
+                active.ignore = active.ignore || {};
+                // Build UID lists from current archive
+                const allUids: string[] = rawConversations.map(c => adapter.getId(c));
+                // Always persist includes for selected
+                for (const uid of allUids) {
+                    if (selectedSet.has(uid)) {
+                        active.include[uid] = true;
+                        delete active.ignore[uid];
+                    }
+                }
+                // Conditionally persist unselected as ignore
+                if (result.persistUnselected) {
+                    const unselected = allUids.filter(uid => !selectedSet.has(uid));
+                    if (result.ignoreScope === 'global') {
+                        await this.plugin.getProfileStore().addGlobalIgnores(unselected);
+                    } else {
+                        for (const uid of unselected) {
+                            active.ignore[uid] = true;
+                            delete active.include[uid];
+                        }
+                    }
+                }
+                await this.plugin.getProfileStore().save(active);
+            } catch (e) {
+                this.plugin.logger.warn('Failed to persist selection to profile', e);
+            }
+
+            // Now run the actual import with progress modal
+            progressModal = new ImportProgressModal(this.plugin.app, file.name);
+            progressCallback = progressModal.getProgressCallback();
+            progressModal.open();
+
+            // Provide initial validation UI feedback
+            progressCallback({ phase: 'validation', title: 'Preparing import…', detail: `Importing ${filteredRaw.length} selected chats` });
+
+            await this.processConversationsFromRaw(zip, file, filteredRaw, isReprocess, provider, progressCallback);
 
             storage.addImportedArchive(fileHash, file.name);
             await this.plugin.saveSettings();
 
-            progressCallback({
+            progressCallback?.({
                 phase: 'complete',
                 title: 'Import completed successfully!',
                 detail: `Processed ${this.conversationProcessor.getCounters().totalNewConversationsToImport + this.conversationProcessor.getCounters().totalExistingConversationsToUpdate} conversations`
@@ -130,25 +188,24 @@ export class ImportService {
 
             this.plugin.logger.error("Error handling zip file", { message });
 
-            progressCallback({
+            progressCallback?.({
                 phase: 'error',
                 title: 'Import failed',
                 detail: message
             });
+            try { new Notice(message, 5000); } catch {}
 
             // Keep modal open for error state
-            setTimeout(() => progressModal.close(), 5000);
+            if (progressModal) {
+                setTimeout(() => progressModal?.close(), 5000);
+            }
         } finally {
             await this.writeImportReport(file.name);
 
             // Only show notice if modal was closed due to error or completion
-            if (!progressModal.isComplete) {
-                new Notice(
-                    this.importReport.hasErrors()
-                        ? "An error occurred during import. Please check the log file for details."
-                        : "Import completed. Log file created in the archive folder."
-                );
-            }
+            // If we used a progress modal, it may be complete by now; otherwise just notify on errors
+            // No additional notice needed in normal success flow
+            /* no-op */
         }
     }
 
@@ -202,28 +259,14 @@ export class ImportService {
         }
     }
 
-    private async processConversations(zip: JSZip, file: File, isReprocess: boolean, forcedProvider?: string, progressCallback?: ImportProgressCallback): Promise<void> {
+    private async processConversationsFromRaw(zip: JSZip, file: File, rawConversations: any[], isReprocess: boolean, provider: string, progressCallback?: ImportProgressCallback): Promise<void> {
         try {
-            progressCallback?.({
-                phase: 'scanning',
-                title: 'Extracting conversations...',
-                detail: 'Reading conversation data from ZIP file'
-            });
-
-            // Extract raw conversation data (provider agnostic)
-            const rawConversations = await this.extractRawConversationsFromZip(zip);
-
             progressCallback?.({
                 phase: 'scanning',
                 title: 'Scanning existing conversations...',
                 detail: 'Checking vault for existing conversations',
                 total: rawConversations.length
             });
-
-            // Validate provider if forced
-            if (forcedProvider) {
-                this.validateProviderMatch(rawConversations, forcedProvider);
-            }
 
             progressCallback?.({
                 phase: 'processing',
@@ -239,7 +282,7 @@ export class ImportService {
                 this.importReport,
                 zip,
                 isReprocess,
-                forcedProvider,
+                provider,
                 progressCallback
             );
 
@@ -270,9 +313,84 @@ export class ImportService {
      * TODO: Make this provider-aware when adding Claude support
      */
     private async extractRawConversationsFromZip(zip: JSZip): Promise<any[]> {
-        // Currently only supports ChatGPT's conversations.json format
-        const conversationsJson = await zip.file("conversations.json")!.async("string");
-        return JSON.parse(conversationsJson);
+        // Locate conversations.json at root or nested path (case-insensitive)
+        const keys = Object.keys(zip.files);
+        const convoKey = keys.find(k => /(^|\/)conversations\.json$/i.test(k));
+        if (!convoKey) return [];
+
+        const file = zip.file(convoKey);
+        if (!file) return [];
+
+        const text = await file.async("string");
+
+        // Try strict JSON first
+        try {
+            const parsed = JSON.parse(text);
+            if (Array.isArray(parsed)) return parsed;
+            if (Array.isArray((parsed as any)?.conversations)) return (parsed as any).conversations;
+            if (Array.isArray((parsed as any)?.data)) return (parsed as any).data;
+            // Single object fallback (some samples provide one conversation object)
+            if ((parsed as any)?.mapping && ((parsed as any)?.id || (parsed as any)?.conversation_id)) {
+                return [parsed];
+            }
+        } catch (_) {
+            // Not strict JSON; try JSONL (one JSON object per line)
+            const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+            const convos: any[] = [];
+            for (const line of lines) {
+                try {
+                    const obj = JSON.parse(line);
+                    convos.push(obj);
+                } catch {
+                    // ignore malformed line
+                }
+            }
+            if (convos.length > 0) return convos;
+        }
+
+        return [];
+    }
+
+    private async buildChatSummaries(raw: any[], provider: string): Promise<ChatSummary[]> {
+        const adapter = this.providerRegistry.getAdapter(provider)!;
+        const summaries: ChatSummary[] = [];
+        const storage = this.plugin.getStorageService();
+        const profile = await this.plugin.getProfileStore().getActive();
+        const globalIgnores = await this.plugin.getProfileStore().listGlobalIgnores();
+
+        for (const chat of raw) {
+            try {
+                const uid = adapter.getId(chat);
+                const title = adapter.getTitle(chat) || 'Untitled';
+                const createdAtSec = adapter.getCreateTime(chat) || 0; // seconds
+                const updatedAtSec = adapter.getUpdateTime(chat) || 0; // seconds
+
+                // Determine status against vault and profile
+                let status: 'new' | 'updated' | 'imported' | 'ignored' = 'new';
+                if ((profile.ignore && profile.ignore[uid]) || (globalIgnores && (globalIgnores as any)[uid])) {
+                    status = 'ignored';
+                } else {
+                    const existing = await storage.getConversationById(uid);
+                    if (existing) {
+                        status = (existing.updateTime < updatedAtSec) ? 'updated' : 'imported';
+                    }
+                }
+
+                summaries.push({
+                    uid,
+                    title,
+                    createdAt: createdAtSec * 1000,
+                    updatedAt: updatedAtSec * 1000,
+                    model: undefined,
+                    messageCount: 0,
+                    status,
+                    sourceRef: { exportPath: 'conversations.json' }
+                });
+            } catch (_) {
+                // skip malformed
+            }
+        }
+        return summaries;
     }
 
     /**

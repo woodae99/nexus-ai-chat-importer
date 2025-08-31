@@ -9,6 +9,7 @@ export interface ChatSummary {
     updatedAt: number;
     model?: string;
     messageCount: number;
+    status?: 'new' | 'updated' | 'imported' | 'ignored';
     keywordsSample?: string;
     sourceRef: {
         exportPath: string;

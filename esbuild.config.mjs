@@ -45,6 +45,26 @@ async function copyFiles() {
     }
 }
 
+async function copyBuiltToRoot() {
+    // Ensure dist/main.js exists, then copy to plugin root for Obsidian hot-reload
+    const srcJs = path.join(process.cwd(), "dist", "main.js");
+    const destJs = path.join(process.cwd(), "main.js");
+    if (await fs.pathExists(srcJs)) {
+        await fs.copy(srcJs, destJs);
+        console.log("Copied dist/main.js -> main.js");
+    } else {
+        console.warn("dist/main.js not found; skipping root copy");
+    }
+
+    // Copy sourcemap if present (dev builds)
+    const srcMap = path.join(process.cwd(), "dist", "main.js.map");
+    const destMap = path.join(process.cwd(), "main.js.map");
+    if (await fs.pathExists(srcMap)) {
+        await fs.copy(srcMap, destMap).catch(() => {});
+        console.log("Copied dist/main.js.map -> main.js.map");
+    }
+}
+
 
 async function build() {
     await fs.emptyDir("dist");
@@ -81,10 +101,12 @@ async function build() {
     if (prod || ios) {
         await context.rebuild();
         await copyFiles();
+        await copyBuiltToRoot();
         context.dispose();
     } else {
         await context.rebuild();
         await copyFiles();
+        await copyBuiltToRoot();
         await context.watch();
     }
 
