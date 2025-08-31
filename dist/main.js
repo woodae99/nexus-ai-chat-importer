@@ -3679,12 +3679,12 @@ __export(upgrade_1_2_0_exports, {
   NexusUpgradeModal: () => NexusUpgradeModal,
   Upgrade120: () => Upgrade120
 });
-var import_obsidian15, ConvertToCalloutsOperation, MoveReportsToProviderOperation, UpdateReportLinksOperation, MoveYearFoldersOperation, NexusUpgradeModal, OfferReimportOperation, Upgrade120;
+var import_obsidian18, ConvertToCalloutsOperation, MoveReportsToProviderOperation, UpdateReportLinksOperation, MoveYearFoldersOperation, NexusUpgradeModal, OfferReimportOperation, Upgrade120;
 var init_upgrade_1_2_0 = __esm({
   "src/upgrade/versions/upgrade-1.2.0.ts"() {
     "use strict";
     init_upgrade_interface();
-    import_obsidian15 = require("obsidian");
+    import_obsidian18 = require("obsidian");
     ConvertToCalloutsOperation = class extends UpgradeOperation {
       constructor() {
         super(...arguments);
@@ -4145,7 +4145,7 @@ ${cleanContent}`;
         }
       }
     };
-    NexusUpgradeModal = class extends import_obsidian15.Modal {
+    NexusUpgradeModal = class extends import_obsidian18.Modal {
       constructor(app, plugin, version, resolve) {
         super(app);
         this.plugin = plugin;
@@ -4186,7 +4186,7 @@ Your conversations will be reorganized with provider structure and modern callou
         } catch (error) {
           console.debug("[NEXUS-DEBUG] Could not fetch release notes from GitHub, using fallback");
         }
-        await import_obsidian15.MarkdownRenderer.render(
+        await import_obsidian18.MarkdownRenderer.render(
           this.app,
           message,
           this.contentEl,
@@ -4264,7 +4264,7 @@ __export(main_exports, {
   default: () => NexusAiChatImporterPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian18 = require("obsidian");
+var import_obsidian21 = require("obsidian");
 
 // src/config/constants.ts
 var DEFAULT_SETTINGS = {
@@ -4633,6 +4633,13 @@ var CommandRegistry = class {
       name: "Import AI conversations",
       callback: () => {
         this.plugin.showProviderSelectionDialog();
+      }
+    });
+    this.plugin.addCommand({
+      id: "nexus-ai-chat-importer-open-management",
+      name: "Open Chat Management",
+      callback: () => {
+        this.plugin.openChatManagementModal();
       }
     });
   }
@@ -8612,15 +8619,133 @@ var StorageService = class {
   }
 };
 
-// src/upgrade/incremental-upgrade-manager.ts
+// src/services/profile-store.ts
+var import_obsidian14 = require("obsidian");
+var ProfileStore = class {
+  constructor(plugin) {
+    this.plugin = plugin;
+    const base = (0, import_obsidian14.normalizePath)(`${this.plugin.manifest.id}/data`);
+    this.statePath = `${base}/state.json`;
+    this.profilesDir = `${base}/profiles`;
+  }
+  async ensureDir(path) {
+    const adapter = this.plugin.app.vault.adapter;
+    if (!await adapter.exists(path)) {
+      await adapter.mkdir(path);
+    }
+  }
+  async readState() {
+    const adapter = this.plugin.app.vault.adapter;
+    if (await adapter.exists(this.statePath)) {
+      const data = await adapter.read(this.statePath);
+      return JSON.parse(data);
+    }
+    return { profiles: ["Default"], activeProfile: "Default", globalIgnores: {} };
+  }
+  async writeState(state) {
+    const adapter = this.plugin.app.vault.adapter;
+    await this.ensureDir(this.statePath.substring(0, this.statePath.lastIndexOf("/")));
+    await adapter.write(this.statePath, JSON.stringify(state, null, 2));
+  }
+  async list() {
+    const state = await this.readState();
+    return state.profiles;
+  }
+  async get(name) {
+    const adapter = this.plugin.app.vault.adapter;
+    const path = `${this.profilesDir}/${name}.json`;
+    if (!await adapter.exists(path))
+      return null;
+    const data = await adapter.read(path);
+    return JSON.parse(data);
+  }
+  async getActive() {
+    const state = await this.readState();
+    const profile = await this.get(state.activeProfile);
+    if (profile)
+      return profile;
+    return { name: state.activeProfile, include: {}, ignore: {} };
+  }
+  async save(profile) {
+    const adapter = this.plugin.app.vault.adapter;
+    await this.ensureDir(this.profilesDir);
+    const path = `${this.profilesDir}/${profile.name}.json`;
+    await adapter.write(path, JSON.stringify(profile, null, 2));
+    const state = await this.readState();
+    if (!state.profiles.includes(profile.name)) {
+      state.profiles.push(profile.name);
+    }
+    await this.writeState(state);
+  }
+  async setActive(name) {
+    const state = await this.readState();
+    state.activeProfile = name;
+    if (!state.profiles.includes(name)) {
+      state.profiles.push(name);
+    }
+    await this.writeState(state);
+  }
+};
+
+// src/services/materialised-store.ts
+var import_obsidian15 = require("obsidian");
+var MaterialisedStore = class {
+  constructor(plugin) {
+    this.plugin = plugin;
+    this.materialisedDir = (0, import_obsidian15.normalizePath)(`${this.plugin.manifest.id}/data/materialised`);
+  }
+  async ensureDir() {
+    const adapter = this.plugin.app.vault.adapter;
+    if (!await adapter.exists(this.materialisedDir)) {
+      await adapter.mkdir(this.materialisedDir);
+    }
+  }
+  async get(uid) {
+    const adapter = this.plugin.app.vault.adapter;
+    const path = `${this.materialisedDir}/${uid}.json`;
+    if (!await adapter.exists(path))
+      return null;
+    const data = await adapter.read(path);
+    return JSON.parse(data);
+  }
+  async put(meta) {
+    await this.ensureDir();
+    const adapter = this.plugin.app.vault.adapter;
+    const path = `${this.materialisedDir}/${meta.uid}.json`;
+    await adapter.write(path, JSON.stringify(meta, null, 2));
+  }
+};
+
+// src/ui/chat-management-modal.ts
 var import_obsidian16 = require("obsidian");
+var ChatManagementModal = class extends import_obsidian16.Modal {
+  constructor(plugin) {
+    super(plugin.app);
+    this.plugin = plugin;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h2", { text: "Chat Management" });
+    contentEl.createEl("p", {
+      text: "This is a placeholder for the upcoming chat management interface."
+    });
+  }
+  onClose() {
+    const { contentEl } = this;
+    contentEl.empty();
+  }
+};
+
+// src/upgrade/incremental-upgrade-manager.ts
+var import_obsidian19 = require("obsidian");
 init_version_utils();
 init_dialogs();
 init_logger();
 
 // src/upgrade/utils/multi-operation-progress-modal.ts
-var import_obsidian14 = require("obsidian");
-var MultiOperationProgressModal = class extends import_obsidian14.Modal {
+var import_obsidian17 = require("obsidian");
+var MultiOperationProgressModal = class extends import_obsidian17.Modal {
   constructor(app, title, operations) {
     super(app);
     this.canClose = false;
@@ -8922,7 +9047,7 @@ var IncrementalUpgradeManager = class {
     } catch (error) {
       console.error(`[NEXUS-DEBUG] Incremental upgrade FAILED:`, error);
       logger3.error("Error during incremental upgrade:", error);
-      new import_obsidian16.Notice("Upgrade failed - see console for details");
+      new import_obsidian19.Notice("Upgrade failed - see console for details");
       return {
         success: false,
         upgradesExecuted: 0,
@@ -9020,7 +9145,7 @@ var IncrementalUpgradeManager = class {
       }
       const overallSuccess = true;
       progressModal.markComplete(`All operations completed successfully!`);
-      new import_obsidian16.Notice(`Upgrade completed: ${upgradesExecuted} versions processed successfully`);
+      new import_obsidian19.Notice(`Upgrade completed: ${upgradesExecuted} versions processed successfully`);
       return {
         success: overallSuccess,
         upgradesExecuted,
@@ -9232,7 +9357,7 @@ var IncrementalUpgradeManager = class {
       }
     } catch (error) {
       logger3.error("Error showing upgrade dialog:", error);
-      new import_obsidian16.Notice(`Upgraded to Nexus AI Chat Importer v${currentVersion}`);
+      new import_obsidian19.Notice(`Upgraded to Nexus AI Chat Importer v${currentVersion}`);
     }
   }
   /**
@@ -9349,8 +9474,8 @@ Version 1.0.2 introduced new metadata parameters required for certain features. 
 init_logger();
 
 // src/dialogs/provider-selection-dialog.ts
-var import_obsidian17 = require("obsidian");
-var ProviderSelectionDialog = class extends import_obsidian17.Modal {
+var import_obsidian20 = require("obsidian");
+var ProviderSelectionDialog = class extends import_obsidian20.Modal {
   constructor(app, providerRegistry, onProviderSelected) {
     super(app);
     this.selectedProvider = null;
@@ -9382,7 +9507,7 @@ var ProviderSelectionDialog = class extends import_obsidian17.Modal {
     contentEl.empty();
     contentEl.createEl("h2", { text: "Select Archive Provider" });
     this.providers.forEach((provider) => {
-      new import_obsidian17.Setting(contentEl).setName(provider.name).setDesc(this.createProviderDescription(provider)).addButton((button) => {
+      new import_obsidian20.Setting(contentEl).setName(provider.name).setDesc(this.createProviderDescription(provider)).addButton((button) => {
         button.setButtonText("Select").setCta().onClick(() => {
           this.selectedProvider = provider.id;
           this.close();
@@ -9407,7 +9532,7 @@ var ProviderSelectionDialog = class extends import_obsidian17.Modal {
 };
 
 // src/main.ts
-var NexusAiChatImporterPlugin = class extends import_obsidian18.Plugin {
+var NexusAiChatImporterPlugin = class extends import_obsidian21.Plugin {
   constructor(app, manifest) {
     super(app, manifest);
     this.logger = new Logger();
@@ -9417,6 +9542,8 @@ var NexusAiChatImporterPlugin = class extends import_obsidian18.Plugin {
     this.commandRegistry = new CommandRegistry(this);
     this.eventHandlers = new EventHandlers(this);
     this.upgradeManager = new IncrementalUpgradeManager(this);
+    this.profileStore = new ProfileStore(this);
+    this.materialisedStore = new MaterialisedStore(this);
   }
   async onload() {
     try {
@@ -9467,6 +9594,7 @@ var NexusAiChatImporterPlugin = class extends import_obsidian18.Plugin {
         await this.saveSettings();
       }
       await this.storageService.loadData();
+      await this.profileStore.getActive();
     } catch (error) {
       this.logger.error("loadSettings failed:", error);
       throw error;
@@ -9531,6 +9659,12 @@ var NexusAiChatImporterPlugin = class extends import_obsidian18.Plugin {
   getFileService() {
     return this.fileService;
   }
+  getProfileStore() {
+    return this.profileStore;
+  }
+  getMaterialisedStore() {
+    return this.materialisedStore;
+  }
   getUpgradeManager() {
     return this.upgradeManager;
   }
@@ -9565,6 +9699,9 @@ var NexusAiChatImporterPlugin = class extends import_obsidian18.Plugin {
       }
     };
     input.click();
+  }
+  openChatManagementModal() {
+    new ChatManagementModal(this).open();
   }
   /**
    * Sort files by timestamp (same logic as ImportService)

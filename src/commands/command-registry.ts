@@ -15,6 +15,14 @@ export class CommandRegistry {
             },
         });
 
+        this.plugin.addCommand({
+            id: "nexus-ai-chat-importer-open-management",
+            name: "Open Chat Management",
+            callback: () => {
+                this.plugin.openChatManagementModal();
+            },
+        });
+
     }
 
     private showResetConfirmation() {
